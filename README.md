@@ -46,31 +46,47 @@ Patient Vitals → Monitor Agent → Alert
                   Documentation Agent → SOAP Note + FHIR Updates
 ```
 
-All agents communicate through an A2A (Agent-to-Agent) message bus. Messages follow defined contracts with JSON schemas, retry logic, and a dead-letter queue for failed deliveries. Observability is built in.
+All agents communicate through an A2A (Agent-to-Agent) message bus. Messages follow defined contracts with JSON schemas, retry logic, and a dead-letter queue for failed deliveries. OpenTelemetry tracing links every message across the chain.
 
 The MCP (Model Context Protocol) layer exposes tools for FHIR queries, clinical scoring, drug interaction checks, protocol retrieval, alert dispatch, and audit logging.
 
-Frontend is a single HTML file with vanilla JavaScript. No React, Vue, Angular, or any JavaScript framework. WebSocket connection handles real-time updates to the clinical command center.
+Frontend is a single HTML file with vanilla JavaScript. No React, Vue, Angular, or any JavaScript framework. WebSockets handle real-time updates to the clinical command center. Sessions persist across page refreshes via localStorage.
+
+---
+
+## What's Implemented
+
+### Authentication and RBAC
+JWT-based authentication with role-based access control. Six roles: Admin, Physician, Nurse, Resident, Pharmacist, Readonly. Each role has a defined permission set enforced at the endpoint level. Demo accounts are pre-seeded for testing.
+
+### FHIR R4 Integration
+A dedicated FHIR client connects to any HAPI FHIR R4-compatible server. Supports patient search, observation queries, medication requests, allergy lookups, condition records, and encounter data. Observation writes use LOINC codes. The sync service bridges FHIR resources into the local database.
+
+### SMART-on-FHIR OAuth
+A complete OAuth 2.0 authorization code flow with PKCE support. Handles launch URLs, state management, token exchange, and token introspection. Supports patient and provider launch contexts with scope management.
+
+### Circuit Breakers
+Per-service circuit breakers protect against cascading failures. Closed/open/half-open states with configurable thresholds. Health endpoint reports circuit breaker status for monitoring.
+
+### OpenTelemetry Tracing
+Every A2A message carries trace context. Agents create spans for each operation. Events are recorded on spans. Stats track total spans, error rates, average duration, and spans by agent.
+
+### Session Persistence
+Selected patient survives page refresh. Auth tokens persist in localStorage. Auto-login with cached credentials on page load. 8-hour session validity.
 
 ---
 
 ## Quick Start
 
 ```bash
-# Clone the repo
 git clone https://github.com/elonmasai7/CodeBlueAi.git
 cd CodeBlueAi
 
-# Copy environment config
 cp .env.example .env
-
-# Start the full stack (PostgreSQL, Redis, Backend, Frontend, Nginx)
 docker-compose up -d
 
-# Run the unit tests
 pytest tests/ -v
 
-# Seed the database with 1000 synthetic patients
 python -m backend.db.init
 ```
 
@@ -80,18 +96,34 @@ Once running:
 - Prometheus metrics: `http://localhost:9090`
 - Grafana dashboards: `http://localhost:3001`
 
+### Demo Credentials
+
+| Username | Password | Role |
+|----------|----------|------|
+| admin | Admin123! | Admin |
+| physician | Physician123! | Physician |
+| nurse | Nurse123! | Nurse |
+
 ---
 
 ## Key Endpoints
 
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| GET | `/api/v1/patients` | List patients (filter by unit, risk level) |
-| GET | `/api/v1/patients/{id}` | Full patient record with vitals, labs, meds |
-| POST | `/api/v1/analyze/{id}` | Trigger full multi-agent analysis |
-| POST | `/api/v1/vitals` | Submit new vital signs |
-| POST | `/api/v1/demo/trigger` | Run the septic shock demo scenario |
-| WS | `/ws/clinical` | Real-time event stream |
+| Method | Endpoint | Auth | Purpose |
+|--------|----------|------|---------|
+| POST | `/api/v1/auth/login` | No | Get JWT tokens |
+| POST | `/api/v1/auth/refresh` | No | Refresh access token |
+| GET | `/api/v1/auth/me` | Yes | Current user info |
+| GET | `/api/v1/patients` | Yes | List patients |
+| GET | `/api/v1/patients/{id}` | Yes | Full patient record |
+| POST | `/api/v1/analyze/{id}` | Yes | Full multi-agent analysis |
+| POST | `/api/v1/vitals` | Yes | Submit vital signs |
+| POST | `/api/v1/demo/trigger` | Yes | Run septic shock demo |
+| WS | `/ws/clinical` | Token | Real-time event stream |
+| GET | `/smart/launch` | No | SMART launch URL |
+| POST | `/smart/token` | No | SMART token exchange |
+| GET | `/system/circuit-breakers` | Yes | Circuit breaker states |
+| GET | `/system/tracing/stats` | Yes | OpenTelemetry stats |
+| GET | `/system/audit-log` | Yes | Audit trail |
 
 ---
 
@@ -116,62 +148,59 @@ The agent collaboration feed on the right side of the UI shows each agent's outp
 code_blue_ai/
 ├── agents/
 │   ├── monitor/           # Clinical scoring + vital monitoring
-│   ├── diagnostic/      # Differential diagnosis engine
-│   ├── guideline/        # Protocol retrieval
-│   ├── coordinator/      # Escalation workflow
-│   └── documentation/    # SOAP note generation
+│   ├── diagnostic/        # Differential diagnosis engine
+│   ├── guideline/         # Protocol retrieval
+│   ├── coordinator/       # Escalation workflow
+│   └── documentation/     # SOAP note generation
 ├── backend/
-│   ├── api/             # FastAPI route handlers
-│   ├── db/              # SQLAlchemy session + seeding
-│   ├── models/          # Database models
-│   └── services/        # Event bus
-├── mcp_server/          # MCP tool registry
-├── a2a_bus/            # Agent message bus
-├── fhir/               # Synthetic patient data generator
-├── frontend/            # Clinical command center UI
-├── tests/              # pytest unit tests
-├── docker/             # Docker configs
-└── k8s/                # Kubernetes manifests
+│   ├── api/               # FastAPI route handlers + auth, SMART, system
+│   ├── db/                # SQLAlchemy session + seeding
+│   ├── models/            # Database models
+│   ├── services/          # Auth, security, circuit breakers, FHIR, SMART
+│   └── main.py            # FastAPI application entry
+├── mcp_server/           # MCP tool registry
+├── a2a_bus/              # Agent message bus + OpenTelemetry tracing
+├── fhir/                 # FHIR client + synthetic patient data generator
+├── frontend/             # Clinical command center UI
+├── tests/                # pytest unit tests
+├── docker/               # Docker configs, nginx, prometheus
+└── k8s/                  # Kubernetes manifests
 ```
 
 ---
 
 ## Technical Decisions
 
-**No Node.js, no npm, no JavaScript frameworks.** Frontend is vanilla HTML, CSS, and JavaScript. WebSockets handle real-time updates. HTMX could have been used for some interactions but wasn't needed.
+**No Node.js, no npm, no JavaScript frameworks.** Frontend is vanilla HTML, CSS, and JavaScript. WebSockets handle real-time updates. No SPA framework needed for this use case.
 
 **Python 3.13+ with asyncio.** All database operations are async via SQLAlchemy 2.0 and asyncpg. The agent logic is synchronous by design for predictability in a clinical context.
 
-**No LangGraph.** The agent orchestration uses a simple message bus pattern. LangGraph is excellent but adds complexity and a JavaScript dependency. A custom bus with contracts and DLQ is lighter and more explicit.
+**No LangGraph.** Agent orchestration uses a custom message bus with contracts and DLQ. Lighter and more explicit than a full orchestration framework.
 
-**FHIR R4 via HAPI FHIR.** The project integrates with a HAPI FHIR server running in Docker. Synthetic patient data is generated in FHIR-compatible format.
+**FHIR R4 via HAPI FHIR.** The FHIR client connects to any R4-compatible server. Synthetic data generator produces FHIR-compatible records for demos.
 
-**Clinical protocols are hardcoded.** Rather than fetching from external guideline APIs, protocols are embedded as Python dataclasses. This keeps the system self-contained and deterministic for demos.
+**Clinical protocols are hardcoded.** Protocols are embedded as Python dataclasses for self-contained, deterministic demos.
+
+**OpenTelemetry for observability.** Traces flow through the A2A bus. No external Jaeger or collector required in dev mode—ConsoleSpanExporter is used by default.
 
 ---
 
 ## Running Without Docker
 
 ```bash
-# Create virtual environment
 python3.13 -m venv venv
 source venv/bin/activate
-
-# Install dependencies
 pip install -r backend/requirements.txt
 
-# Set environment variables
 export DATABASE_URL=postgresql+asyncpg://codeblue:codeblue_secret@localhost:5432/codeblue
 export REDIS_URL=redis://localhost:6379
+export JWT_SECRET=change_this_32chars_minimum
 
-# Initialize database
 python -m backend.db.init
-
-# Start backend
 uvicorn backend.main:app --reload --port 8000
 ```
 
-You'll need PostgreSQL 16+ and Redis 7 running separately.
+PostgreSQL 16+ and Redis 7 required separately.
 
 ---
 
@@ -179,7 +208,7 @@ You'll need PostgreSQL 16+ and Redis 7 running separately.
 
 ```bash
 pytest tests/ -v
-pytest tests/ --cov=agents --cov=mcp_server --cov=a2a_bus
+pytest tests/ --cov=agents --cov=mcp_server --cov=a2a_bus --cov=backend
 ```
 
 Tests cover each agent independently. No integration tests requiring external services are included in the default test run.
@@ -188,38 +217,25 @@ Tests cover each agent independently. No integration tests requiring external se
 
 ## Deployment
 
-Development uses `docker-compose up`. Production uses the `docker-compose.prod.yml` with environment-specific settings, or the Kubernetes manifests in `/k8s/` for cluster deployment.
+Development uses `docker-compose up`. Production uses `docker-compose.prod.yml` with environment-specific settings, or the Kubernetes manifests in `/k8s/` for cluster deployment.
 
 Required environment variables for production:
 - `DATABASE_URL` — PostgreSQL connection string
 - `REDIS_URL` — Redis connection string
-- `JWT_SECRET` — Secret for JWT token signing
+- `JWT_SECRET` — Secret for JWT token signing (minimum 32 characters)
 - `FHIR_BASE_URL` — HAPI FHIR server URL
 
 ---
 
-## What's Working
+## Known Gaps
 
-- Patient roster with filtering and search
-- Real-time vital sign display with waveform visualization
-- All five agents executing the full analysis chain
-- MCP tool execution via API
-- WebSocket streaming to the UI
-- Demo mode with the septic shock scenario
-- SOAP note generation
-- FHIR-compatible data models
-- Docker-based deployment
+These were intentionally deferred rather than implemented poorly:
 
-## What's Missing
-
-- Real FHIR server integration (currently uses synthetic data only)
-- Authentication and RBAC (JWT scaffolding exists but isn't enforced)
-- Persistence across page refreshes in the UI
-- Production-grade error handling and circuit breakers
-- Actual SMART-on-FHIR OAuth flow
-- Full A2A bus observability with OpenTelemetry traces
-
-These are gaps that would be filled in a production system.
+- Real HAPI FHIR server integration is wired but not end-to-end tested with a live server
+- Audit log is written to the database but the frontend doesn't display it
+- Drug interaction MCP tool returns empty results (requires a real drug database)
+- Kubernetes manifests cover only the backend deployment, not the full stack
+- No rate limiting on API endpoints
 
 ---
 

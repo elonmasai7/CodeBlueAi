@@ -21,6 +21,14 @@ from agents.documentation.agent import DocumentationAgent
 from mcp_server.server import mcp_server
 from a2a_bus.message_bus import message_bus, A2AMessage
 from backend.services.event_bus import event_bus
+from backend.services.circuit_breaker import circuit_registry
+from backend.services.auth import get_current_user, TokenPayload
+from backend.api import router as api_router
+from backend.api.auth import router as auth_router
+from backend.api.smart import router as smart_router
+from backend.api.system import router as system_router
+from backend.api.routes import router as v1_router
+from backend.services.security import Permission, check_permission
 
 structlog.configure(
     processors=[
@@ -89,22 +97,27 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Code Blue AI",
-    description="Autonomous Clinical Emergency Agent Network",
+    description="Autonomous Clinical Emergency Agent Network - Healthcare Hackathon Platform",
     version="1.0.0",
     lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3000", "http://localhost:8000", "http://localhost"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+app.include_router(v1_router)
+app.include_router(auth_router)
+app.include_router(smart_router)
+app.include_router(system_router)
+
 
 @app.websocket("/ws/clinical")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
     await websocket.accept()
     connections.append(websocket)
     try:
@@ -112,7 +125,8 @@ async def websocket_endpoint(websocket: WebSocket):
             data = await websocket.receive_text()
             await websocket.send_json({"status": "connected", "message": "Clinical WebSocket active"})
     except WebSocketDisconnect:
-        connections.remove(websocket)
+        if websocket in connections:
+            connections.remove(websocket)
 
 
 async def broadcast_event(event: Dict[str, Any]):
@@ -130,7 +144,13 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+    circuit_states = circuit_registry.get_all_states()
+    healthy = all(cb["state"] != "OPEN" for cb in circuit_states)
+    return {
+        "status": "healthy" if healthy else "degraded",
+        "timestamp": datetime.utcnow().isoformat(),
+        "circuit_breakers": circuit_states,
+    }
 
 
 @app.get("/api/v1/patients")
@@ -139,10 +159,14 @@ async def list_patients(
     risk_level: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     limit: int = Query(50),
+    user: TokenPayload = Depends(get_current_user),
 ):
+    if not check_permission(user.role, Permission.READ_PATIENT):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
     async with get_db_session() as session:
         query = select(Patient).where(Patient.is_active == True)
-        
+
         if unit_type:
             query = query.where(Patient.unit_type == unit_type)
         if risk_level:
@@ -150,16 +174,19 @@ async def list_patients(
         if search:
             search_term = f"%{search}%"
             query = query.where(Patient.mrn.ilike(search_term) | Patient.last_name.ilike(search_term))
-        
+
         query = query.order_by(Patient.risk_level.desc()).limit(limit)
         result = await session.execute(query)
         patients = result.scalars().all()
-        
-        return [p.__dict__ for p in patients]
+
+        return [_serialize_patient(p) for p in patients]
 
 
 @app.get("/api/v1/patients/{patient_id}")
-async def get_patient(patient_id: str):
+async def get_patient(patient_id: str, user: TokenPayload = Depends(get_current_user)):
+    if not check_permission(user.role, Permission.READ_PATIENT):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
     async with get_db_session() as session:
         result = await session.execute(
             select(Patient)
@@ -167,31 +194,18 @@ async def get_patient(patient_id: str):
             .where(Patient.id == patient_id)
         )
         patient = result.scalar_one_or_none()
-        
+
         if not patient:
             raise HTTPException(status_code=404, detail="Patient not found")
-        
-        return {
-            "id": patient.id,
-            "mrn": patient.mrn,
-            "first_name": patient.first_name,
-            "last_name": patient.last_name,
-            "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
-            "sex": patient.sex,
-            "unit_type": patient.unit_type,
-            "bed_number": patient.bed_number,
-            "primary_diagnosis": patient.primary_diagnosis,
-            "allergies": patient.allergies or [],
-            "comorbidities": patient.comorbidities or [],
-            "risk_level": patient.risk_level,
-            "vitals": [v.__dict__ for v in patient.vitals[-10:]],
-            "labs": [l.__dict__ for l in patient.labs[-10:]],
-            "medications": [m.__dict__ for m in patient.medications],
-        }
+
+        return _serialize_patient_full(patient)
 
 
 @app.post("/api/v1/vitals")
-async def create_vital(vital: VitalCreate):
+async def create_vital(vital: VitalCreate, user: TokenPayload = Depends(get_current_user)):
+    if not check_permission(user.role, Permission.WRITE_VITALS):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
     async with get_db_session() as session:
         new_vital = VitalSign(
             id=str(uuid.uuid4()),
@@ -206,20 +220,20 @@ async def create_vital(vital: VitalCreate):
             lactate=vital.lactate,
             gcs=15.0,
         )
-        
+
         if vital.systolic_bp and vital.diastolic_bp:
             new_vital.mean_arterial_pressure = (vital.systolic_bp + vital.diastolic_bp * 2) / 3
-        
+
         session.add(new_vital)
-        
+
         patient_result = await session.execute(select(Patient).where(Patient.id == vital.patient_id))
         patient = patient_result.scalar_one_or_none()
-        
+
         if patient:
             vitals_dict = vital.model_dump(exclude={"patient_id"})
             vitals_dict["map"] = new_vital.mean_arterial_pressure
             analysis = monitor_agent.analyze_clinical_picture(patient.id, patient.mrn, vitals_dict)
-            
+
             if analysis["alerts"]:
                 await broadcast_event({
                     "type": "ALERT",
@@ -229,14 +243,17 @@ async def create_vital(vital: VitalCreate):
                     "scores": analysis["scores"],
                     "timestamp": datetime.utcnow().isoformat(),
                 })
-            
+
             return {"vital_id": new_vital.id, "analysis": analysis}
-        
+
         return {"vital_id": new_vital.id}
 
 
 @app.post("/api/v1/analyze/{patient_id}")
-async def analyze_patient(patient_id: str):
+async def analyze_patient(patient_id: str, user: TokenPayload = Depends(get_current_user)):
+    if not check_permission(user.role, Permission.RUN_ANALYSIS):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
     async with get_db_session() as session:
         result = await session.execute(
             select(Patient)
@@ -244,10 +261,10 @@ async def analyze_patient(patient_id: str):
             .where(Patient.id == patient_id)
         )
         patient = result.scalar_one_or_none()
-        
+
         if not patient:
             raise HTTPException(status_code=404, detail="Patient not found")
-        
+
         latest_vitals = patient.vitals[-1].__dict__ if patient.vitals else {}
         vitals_dict = {
             "heart_rate": latest_vitals.get("heart_rate", 70),
@@ -259,9 +276,9 @@ async def analyze_patient(patient_id: str):
             "map": latest_vitals.get("mean_arterial_pressure", 90),
             "lactate": latest_vitals.get("lactate", 1.0),
         }
-        
+
         monitor_result = monitor_agent.analyze_clinical_picture(patient.id, patient.mrn, vitals_dict)
-        
+
         diagnostic_result = await diagnostic_agent.analyze(
             patient.id,
             patient.mrn,
@@ -272,7 +289,7 @@ async def analyze_patient(patient_id: str):
             patient.comorbidities or [],
             patient.primary_diagnosis or "Unknown",
         )
-        
+
         guideline_response = guideline_agent.generate_response(
             patient.id,
             patient.mrn,
@@ -280,7 +297,7 @@ async def analyze_patient(patient_id: str):
             diagnostic_result.primary_diagnosis.name if diagnostic_result.primary_diagnosis else "Unknown",
             {"vitals": vitals_dict},
         )
-        
+
         coordinator_response = coordinator_agent.coordinate_escalation(
             patient.id,
             patient.mrn,
@@ -290,7 +307,7 @@ async def analyze_patient(patient_id: str):
             monitor_result["scores"],
             vitals_dict,
         )
-        
+
         soap = documentation_agent.generate_soap_note(
             patient.id,
             patient.mrn,
@@ -303,7 +320,22 @@ async def analyze_patient(patient_id: str):
             monitor_result["scores"],
             {"level": coordinator_response.level.value, "reason": coordinator_response.reason},
         )
-        
+
+        audit_entry = AuditLog(
+            id=str(uuid.uuid4()),
+            user_id=user.sub,
+            action="ANALYZE_PATIENT",
+            resource_type="Patient",
+            resource_id=patient_id,
+            details={
+                "diagnosis": diagnostic_result.primary_diagnosis.name if diagnostic_result.primary_diagnosis else None,
+                "news2": monitor_result["scores"]["NEWS2"]["value"],
+                "escalation_level": coordinator_response.level.value,
+            },
+            timestamp=datetime.utcnow(),
+        )
+        session.add(audit_entry)
+
         return {
             "patient_id": patient.id,
             "mrn": patient.mrn,
@@ -347,14 +379,14 @@ async def analyze_patient(patient_id: str):
 
 
 @app.post("/api/v1/demo/trigger")
-async def trigger_demo():
+async def trigger_demo(user: TokenPayload = Depends(get_current_user)):
     async with get_db_session() as session:
         result = await session.execute(select(Patient).order_by(Patient.risk_level.desc()).limit(1))
         patient = result.scalar_one_or_none()
-        
+
         if not patient:
             return {"status": "no_active_patients"}
-        
+
         await broadcast_event({
             "type": "DEMO_START",
             "patient_id": patient.id,
@@ -362,7 +394,7 @@ async def trigger_demo():
             "patient_name": f"{patient.first_name} {patient.last_name}",
             "timestamp": datetime.utcnow().isoformat(),
         })
-        
+
         vitals = {
             "heart_rate": 128,
             "systolic_bp": 82,
@@ -373,9 +405,9 @@ async def trigger_demo():
             "map": 62,
             "lactate": 4.8,
         }
-        
+
         analysis = monitor_agent.analyze_clinical_picture(patient.id, patient.mrn, vitals)
-        
+
         await broadcast_event({
             "type": "AGENT_MESSAGE",
             "agent": "MonitorAgent",
@@ -384,7 +416,7 @@ async def trigger_demo():
             "data": analysis,
             "timestamp": datetime.utcnow().isoformat(),
         })
-        
+
         return {
             "status": "demo_triggered",
             "patient_id": patient.id,
@@ -395,13 +427,13 @@ async def trigger_demo():
 
 
 @app.get("/api/v1/agent-feed")
-async def get_agent_feed(limit: int = Query(20)):
+async def get_agent_feed(limit: int = Query(20), user: TokenPayload = Depends(get_current_user)):
     async with get_db_session() as session:
         result = await session.execute(
             select(AgentMessage).order_by(AgentMessage.timestamp.desc()).limit(limit)
         )
         messages = result.scalars().all()
-        
+
         return [
             {
                 "id": m.id,
@@ -417,7 +449,7 @@ async def get_agent_feed(limit: int = Query(20)):
 
 
 @app.post("/api/v1/mcp/execute")
-async def execute_mcp_tool(request: Dict[str, Any]):
+async def execute_mcp_tool(request: Dict[str, Any], user: TokenPayload = Depends(get_current_user)):
     from mcp_server.server import MCPToolRequest
     mcp_request = MCPToolRequest(
         tool=request.get("tool", ""),
@@ -433,5 +465,30 @@ async def list_mcp_tools():
 
 
 @app.get("/api/v1/a2a/status")
-async def a2a_status():
+async def a2a_status(user: TokenPayload = Depends(get_current_user)):
     return message_bus.get_stats()
+
+
+def _serialize_patient(p) -> Dict[str, Any]:
+    return {
+        "id": p.id,
+        "mrn": p.mrn,
+        "first_name": p.first_name,
+        "last_name": p.last_name,
+        "date_of_birth": p.date_of_birth.isoformat() if p.date_of_birth else None,
+        "sex": p.sex,
+        "unit_type": p.unit_type,
+        "bed_number": p.bed_number,
+        "primary_diagnosis": p.primary_diagnosis,
+        "allergies": p.allergies or [],
+        "comorbidities": p.comorbidities or [],
+        "risk_level": p.risk_level,
+    }
+
+
+def _serialize_patient_full(p) -> Dict[str, Any]:
+    result = _serialize_patient(p)
+    result["vitals"] = [v.__dict__ for v in p.vitals[-20:]]
+    result["labs"] = [l.__dict__ for l in p.labs[-20:]]
+    result["medications"] = [m.__dict__ for m in p.medications]
+    return result
