@@ -114,13 +114,21 @@ class MCPServer:
         }
         
         self._tools["drug_interaction_check"] = {
-            "description": "Check drug interactions",
+            "description": "Check drug interactions between multiple medications",
             "parameters": {
                 "drugs": {"type": "array", "required": True},
             },
             "handler": self._check_drug_interactions,
         }
-        
+
+        self._tools["drug_interaction_graph"] = {
+            "description": "Get interaction graph for multiple drugs",
+            "parameters": {
+                "drugs": {"type": "array", "required": True},
+            },
+            "handler": self._drug_interaction_graph,
+        }
+
         self._tools["drug_renal_dosing"] = {
             "description": "Get renal dosing recommendations",
             "parameters": {
@@ -129,15 +137,21 @@ class MCPServer:
             },
             "handler": self._renal_dosing,
         }
-        
+
         self._tools["protocol_get"] = {
-            "description": "Get clinical protocol",
+            "description": "Get clinical protocol by diagnosis",
             "parameters": {
                 "diagnosis": {"type": "string", "required": True},
             },
             "handler": self._get_protocol,
         }
-        
+
+        self._tools["protocol_list"] = {
+            "description": "List all available clinical protocols",
+            "parameters": {},
+            "handler": self._list_protocols,
+        }
+
         self._tools["alert_dispatch"] = {
             "description": "Dispatch clinical alert",
             "parameters": {
@@ -147,16 +161,47 @@ class MCPServer:
             },
             "handler": self._dispatch_alert,
         }
-        
+
+        self._tools["alert_acknowledge"] = {
+            "description": "Acknowledge a clinical alert",
+            "parameters": {
+                "alert_id": {"type": "string", "required": True},
+                "acknowledged_by": {"type": "string", "required": True},
+            },
+            "handler": self._acknowledge_alert,
+        }
+
         self._tools["audit_log"] = {
             "description": "Create audit log entry",
             "parameters": {
                 "user_id": {"type": "string", "required": True},
                 "action": {"type": "string", "required": True},
                 "resource": {"type": "string", "required": True},
+                "resource_id": {"type": "string"},
                 "details": {"type": "object"},
+                "ip_address": {"type": "string"},
             },
             "handler": self._create_audit_log,
+        }
+
+        self._tools["audit_query"] = {
+            "description": "Query audit logs",
+            "parameters": {
+                "user_id": {"type": "string"},
+                "action": {"type": "string"},
+                "resource_type": {"type": "string"},
+                "limit": {"type": "integer", "default": 50},
+            },
+            "handler": self._query_audit_logs,
+        }
+
+        self._tools["audit_export"] = {
+            "description": "Export audit logs as JSON",
+            "parameters": {
+                "format": {"type": "string", "default": "json"},
+                "limit": {"type": "integer", "default": 100},
+            },
+            "handler": self._export_audit_logs,
         }
         
         self._tools["discover"] = {
@@ -178,7 +223,7 @@ class MCPServer:
             for name, tool in self._tools.items()
         ]
 
-    async def execute_tool(self, request: MCPToolRequest) -> MCPTooloolResponse:
+    async def execute_tool(self, request: MCPToolRequest) -> MCPToolResponse:
         start_time = datetime.utcnow()
         
         if request.tool not in self._tools:
@@ -285,13 +330,54 @@ class MCPServer:
         return {"score": 0, "interpretation": "Low risk", "risk_level": "LOW"}
 
     async def _check_drug_interactions(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        return {"interactions": [], "severity": "NONE"}
+        from mcp_server.drug_db import drug_interaction_service
+        drugs = args.get("drugs", [])
+        if len(drugs) < 2:
+            return {"interactions": [], "severity": "NONE", "note": "Need at least 2 drugs to check interactions"}
+        interactions = drug_interaction_service.check_multi_interactions(drugs)
+        return {
+            "interactions": [
+                {"drug1": i.drug1, "drug2": i.drug2, "severity": i.severity, "description": i.description, "recommendation": i.recommendation}
+                for i in interactions
+            ],
+            "severity": "NONE" if not interactions else max(i.severity for i in interactions),
+            "max_severity": drug_interaction_service._get_max_severity(interactions),
+            "total_checked": len(drugs),
+            "pairs_checked": len(interactions),
+        }
 
     async def _renal_dosing(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        return {"dose_recommendation": "Standard dosing", "adjustments": "None needed"}
+        from mcp_server.drug_db import drug_interaction_service
+        drug = args.get("drug", "")
+        crcl = args.get("creatinine_clearance", 90)
+        result = drug_interaction_service.get_renal_dosing(drug, crcl)
+        return {
+            "drug": result.drug,
+            "indication": result.indication,
+            "crcl_threshold": result.crcl_threshold,
+            "recommendation": result.recommendation,
+            "monitoring": result.monitoring,
+        }
 
     async def _get_protocol(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        return {"protocol": "General supportive care", "code": "GENERAL"}
+        from agents.guideline.agent import GuidelineAgent
+        agent = GuidelineAgent()
+        diagnosis = args.get("diagnosis", "")
+        protocol = agent.get_protocol(diagnosis, diagnosis)
+        if protocol:
+            return {
+                "name": protocol.name,
+                "code": protocol.code,
+                "description": protocol.description,
+                "interventions": [
+                    {"action": i.action, "timing": i.timing, "dose": i.dose, "priority": i.priority}
+                    for i in protocol.interventions
+                ],
+                "required_monitoring": protocol.required_monitoring,
+                "follow_up_actions": protocol.follow_up_actions,
+                "estimated_duration": protocol.estimated_duration,
+            }
+        return {"name": "General Supportive Care", "code": "GENERAL", "description": "Standard monitoring and supportive measures"}
 
     async def _dispatch_alert(self, args: Dict[str, Any]) -> Dict[str, Any]:
         return {"alert_id": "placeholder", "dispatched": True}
@@ -301,6 +387,64 @@ class MCPServer:
 
     async def _discover_tools(self, args: Dict[str, Any]) -> Dict[str, Any]:
         return {"tools": self.list_tools(), "version": "1.0.0"}
+
+    async def _drug_interaction_graph(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        from mcp_server.drug_db import drug_interaction_service
+        drugs = args.get("drugs", [])
+        return drug_interaction_service.get_interaction_graph(drugs)
+
+    async def _list_protocols(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        from agents.guideline.agent import GuidelineAgent
+        agent = GuidelineAgent()
+        return {
+            "protocols": [
+                {"name": p, "code": agent._protocols[p].code}
+                for p in agent._protocols
+            ]
+        }
+
+    async def _acknowledge_alert(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        alert_id = args.get("alert_id", "")
+        acknowledged_by = args.get("acknowledged_by", "")
+        return {"alert_id": alert_id, "acknowledged_by": acknowledged_by, "acknowledged_at": datetime.utcnow().isoformat(), "status": "acknowledged"}
+
+    async def _query_audit_logs(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        from backend.db.session import get_db_session
+        from backend.models.models import AuditLog
+        from sqlalchemy import select
+
+        limit = args.get("limit", 50)
+        async with get_db_session() as session:
+            query = select(AuditLog).order_by(AuditLog.timestamp.desc()).limit(limit)
+            result = await session.execute(query)
+            logs = result.scalars().all()
+        return {
+            "logs": [
+                {"id": l.id, "timestamp": l.timestamp.isoformat(), "user_id": l.user_id, "action": l.action, "resource_type": l.resource_type, "resource_id": l.resource_id}
+                for l in logs
+            ],
+            "count": len(logs),
+        }
+
+    async def _export_audit_logs(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        from backend.db.session import get_db_session
+        from backend.models.models import AuditLog
+        from sqlalchemy import select
+
+        limit = args.get("limit", 100)
+        async with get_db_session() as session:
+            query = select(AuditLog).order_by(AuditLog.timestamp.desc()).limit(limit)
+            result = await session.execute(query)
+            logs = result.scalars().all()
+        return {
+            "format": args.get("format", "json"),
+            "exported_at": datetime.utcnow().isoformat(),
+            "count": len(logs),
+            "logs": [
+                {"id": l.id, "timestamp": l.timestamp.isoformat(), "user_id": l.user_id, "action": l.action, "resource_type": l.resource_type, "resource_id": l.resource_id, "details": l.details, "ip_address": l.ip_address}
+                for l in logs
+            ],
+        }
 
 
 mcp_server = MCPServer()

@@ -18,7 +18,6 @@ logger = structlog.get_logger()
 tracer_provider = TracerProvider(
     resource=Resource.create({"service.name": "codeblue-ai", "service.version": "1.0.0"})
 )
-)
 tracer_provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
 trace.set_tracer_provider(tracer_provider)
 tracer = trace.get_tracer("codeblue-a2a-bus")

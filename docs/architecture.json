@@ -1,0 +1,181 @@
+{
+  "system_name": "Code Blue AI",
+  "version": "1.0.0",
+  "tagline": "When seconds matter, agents assemble instantly.",
+  "description": "Autonomous Clinical Emergency Agent Network - Multi-agent system for real-time patient deterioration detection and coordinated clinical response.",
+  "stack": {
+    "backend": "Python 3.13+ / FastAPI / SQLAlchemy 2.0 (async) / PostgreSQL / Redis",
+    "ai": "Custom agent orchestration (no LangGraph/npm)",
+    "interoperability": "MCP + A2A + FHIR R4 + SMART-on-FHIR",
+    "frontend": "Vanilla HTML5 / CSS / JavaScript / WebSockets",
+    "infrastructure": "Docker Compose / Kubernetes / NGINX / Prometheus / Grafana",
+    "tracing": "OpenTelemetry"
+  },
+  "constraints": {
+    "forbidden": ["Node.js", "npm", "React", "Next.js", "Vue", "Angular", "Express", "TypeScript build chains", "Electron"],
+    "required": ["Python backend only", "FastAPI allowed", "FHIR R4 compatibility", "MCP servers", "A2A communication", "Full explainability"]
+  },
+  "agents": {
+    "monitor": {
+      "id": "monitor",
+      "name": "Monitor Agent",
+      "description": "Continuously evaluates patient vitals, computes clinical scores, detects deterioration patterns",
+      "triggers": ["VITAL_ALERT", "DETERIORATION_DETECTED"],
+      "subscribes_to": [],
+      "publishes_to": ["diagnostic", "guideline", "coordinator"],
+      "capabilities": ["NEWS2", "SOFA", "qSOFA", "sepsis_detection", "aki_detection", "stroke_screen", "acs_screen"],
+      "mcp_tools": ["clinical_score_news2", "clinical_score_sofa", "clinical_score_qsofa", "clinical_score_mews"]
+    },
+    "diagnostic": {
+      "id": "diagnostic",
+      "name": "Diagnostic Agent",
+      "description": "Analyzes labs, medications, allergies, conditions to generate ranked differential diagnosis",
+      "triggers": ["DIAGNOSTIC_REQUEST"],
+      "subscribes_to": ["monitor"],
+      "publishes_to": ["guideline", "coordinator"],
+      "capabilities": ["differential_diagnosis", "risk_prediction", "evidence_chain"],
+      "mcp_tools": ["fhir_search", "fhir_get_labs", "fhir_get_medications", "fhir_get_allergies"]
+    },
+    "guideline": {
+      "id": "guideline",
+      "name": "Guideline Agent",
+      "description": "Matches diagnosis to clinical protocols, provides step-by-step interventions",
+      "triggers": ["GUIDELINE_REQUEST"],
+      "subscribes_to": ["diagnostic"],
+      "publishes_to": ["coordinator"],
+      "capabilities": ["sepsis_bundle", "stemi_protocol", "stroke_protocol", "acls", "pe_workup", "dka_protocol"],
+      "mcp_tools": ["protocol_get"]
+    },
+    "coordinator": {
+      "id": "coordinator",
+      "name": "Coordinator Agent",
+      "description": "Escalates alerts, triggers tasks, notifies clinical staff",
+      "triggers": ["ESCALATION_REQUEST"],
+      "subscribes_to": ["guideline"],
+      "publishes_to": ["documentation"],
+      "capabilities": ["nurse_notification", "icu_escalation", "physician_page", "lab_orders", "task_queue"],
+      "mcp_tools": ["alert_dispatch", "audit_log"]
+    },
+    "documentation": {
+      "id": "documentation",
+      "name": "Documentation Agent",
+      "description": "Generates SOAP notes and updates FHIR resources",
+      "triggers": ["DOCUMENTATION_REQUEST"],
+      "subscribes_to": ["coordinator"],
+      "publishes_to": [],
+      "capabilities": ["soap_note", "careplan_update", "communication_update", "task_update"],
+      "mcp_tools": ["audit_log"]
+    }
+  },
+  "mcp_servers": {
+    "fhir": {
+      "name": "FHIR Query MCP",
+      "description": "Queries FHIR R4 resources from HAPI FHIR server",
+      "tools": ["fhir_search", "fhir_get_patient", "fhir_get_observations", "fhir_get_labs", "fhir_get_medications", "fhir_get_allergies", "fhir_get_encounters"]
+    },
+    "clinical_scoring": {
+      "name": "Clinical Scoring MCP",
+      "description": "Computes clinical deterioration scores",
+      "tools": ["clinical_score_news2", "clinical_score_sofa", "clinical_score_qsofa", "clinical_score_mews"]
+    },
+    "drug": {
+      "name": "Drug Interaction MCP",
+      "description": "Checks drug interactions and renal dosing",
+      "tools": ["drug_interaction_check", "drug_renal_dosing", "drug_interaction_graph"]
+    },
+    "protocol": {
+      "name": "Protocol MCP",
+      "description": "Retrieves clinical protocols and guidelines",
+      "tools": ["protocol_get", "protocol_list"]
+    },
+    "alert": {
+      "name": "Alert MCP",
+      "description": "Dispatches clinical alerts",
+      "tools": ["alert_dispatch", "alert_acknowledge"]
+    },
+    "audit": {
+      "name": "Audit MCP",
+      "description": "Immutable audit logging",
+      "tools": ["audit_log", "audit_query", "audit_export"]
+    }
+  },
+  "a2a_contracts": {
+    "VITAL_ALERT": {
+      "schema": {"patient_id": "string", "mrn": "string", "vitals": "object", "scores": "object"},
+      "from": "monitor",
+      "to": ["diagnostic", "guideline", "coordinator"]
+    },
+    "DIAGNOSTIC_REQUEST": {
+      "schema": {"patient_id": "string", "mrn": "string", "clinical_data": "object"},
+      "from": "monitor",
+      "to": ["diagnostic"]
+    },
+    "GUIDELINE_REQUEST": {
+      "schema": {"patient_id": "string", "mrn": "string", "diagnosis": "string"},
+      "from": "diagnostic",
+      "to": ["guideline"]
+    },
+    "ESCALATION_REQUEST": {
+      "schema": {"patient_id": "string", "mrn": "string", "risk_level": "string", "diagnosis": "string"},
+      "from": "guideline",
+      "to": ["coordinator"]
+    },
+    "DOCUMENTATION_REQUEST": {
+      "schema": {"patient_id": "string", "mrn": "string", "clinical_summary": "object"},
+      "from": "coordinator",
+      "to": ["documentation"]
+    },
+    "AGENT_RESPONSE": {
+      "schema": {"message_id": "string", "result": "object", "error": "string"},
+      "from": "*",
+      "to": "*"
+    }
+  },
+  "data_flow": {
+    "sequence": [
+      "1. Patient data ingested via FHIR API or WebSocket",
+      "2. Monitor Agent evaluates vitals, computes NEWS2/SOFA/qSOFA",
+      "3. If deterioration detected, Monitor publishes VITAL_ALERT to A2A bus",
+      "4. Diagnostic Agent receives alert, analyzes clinical picture",
+      "5. Diagnostic publishes DIAGNOSTIC_REQUEST to A2A bus",
+      "6. Guideline Agent receives request, retrieves appropriate protocol",
+      "7. Guideline publishes GUIDELINE_REQUEST response",
+      "8. Coordinator Agent receives protocol, triggers escalation",
+      "9. Coordinator publishes ESCALATION_REQUEST with task list",
+      "10. Documentation Agent receives escalation, writes SOAP note",
+      "11. All agents write audit logs via MCP Audit tool",
+      "12. Frontend reflects all events via WebSocket in real time"
+    ]
+  },
+  "fhirtopic_map": {
+    "Patient": "demographics and identifiers",
+    "Observation": "vital signs and lab results",
+    "Condition": "diagnoses and problems",
+    "MedicationRequest": "active medications",
+    "AllergyIntolerance": "allergy records",
+    "Encounter": "admission and visit records",
+    "CarePlan": "treatment plans",
+    "Communication": "clinical notes and messages",
+    "DetectedIssue": "clinical alerts and warnings",
+    "Task": "clinical tasks and orders"
+  },
+  "security": {
+    "auth": "JWT Bearer tokens with RS256/HS256",
+    "rbac": "6 roles: admin, physician, nurse, resident, pharmacist, readonly",
+    "permissions": ["read:patient", "write:patient", "read:vitals", "write:vitals", "read:labs", "write:labs", "run:analysis", "dispatch:alert", "view:audit", "manage:users", "fhir:read", "fhir:write"],
+    "smart_on_fhir": "OAuth 2.0 with PKCE, patient/provider launch",
+    "audit": "Immutable logs for all PHI access"
+  },
+  "demo_scenario": {
+    "name": "Septic Shock Detection",
+    "patient": {"name": "John Doe", "age": 62, "initial_diagnosis": "Community Acquired Pneumonia"},
+    "progression": [
+      {"step": 1, "phase": "STABLE", "vitals": {"hr": 88, "sbp": 125, "spo2": 95, "rr": 18, "temp": 37.5, "lactate": 1.2}},
+      {"step": 2, "phase": "EARLY DETERIORATION", "vitals": {"hr": 102, "sbp": 108, "spo2": 91, "rr": 24, "temp": 38.4, "lactate": 2.1}},
+      {"step": 3, "phase": "SEPSIS", "vitals": {"hr": 118, "sbp": 92, "spo2": 88, "rr": 28, "temp": 39.0, "lactate": 3.5}},
+      {"step": 4, "phase": "SEPTIC SHOCK", "vitals": {"hr": 128, "sbp": 82, "spo2": 87, "rr": 30, "temp": 39.2, "lactate": 4.8}}
+    ],
+    "agent_chain": ["Monitor Agent detects deterioration", "Diagnostic Agent confirms sepsis", "Guideline Agent retrieves 1-hour bundle", "Coordinator Agent triggers Rapid Response", "Documentation Agent generates SOAP note"],
+    "expected_outcome": "Patient stabilized via protocol with full agent collaboration documented"
+  }
+}
