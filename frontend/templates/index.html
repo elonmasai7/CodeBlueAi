@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Code Blue AI - Clinical Command Center</title>
+    <link rel="stylesheet" href="/styles/main.css">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect fill='%230a0f14' width='32' height='32' rx='4'/><text x='16' y='22' font-family='monospace' font-size='16' fill='%23ff3b4e' text-anchor='middle'>&#x2764;</text></svg>">
+</head>
+<body>
+    <div class="command-center">
+        <header class="header">
+            <div class="header-left">
+                <div class="logo">
+                    <span class="logo-icon">&#x2764;</span>
+                    <span class="logo-text">CODE BLUE AI</span>
+                </div>
+                <div class="status-indicator">
+                    <span class="status-dot"></span>
+                    <span class="status-text">SYSTEMS NOMINAL</span>
+                </div>
+            </div>
+            <div class="header-center">
+                <div class="clock" id="mainClock">00:00:00</div>
+                <div class="date" id="mainDate">2026-01-01</div>
+            </div>
+            <div class="header-right">
+                <div class="connection-status">
+                    <span class="conn-dot connected"></span>
+                    <span>FHIR Connected</span>
+                </div>
+                <div class="connection-status">
+                    <span class="conn-dot connected"></span>
+                    <span>Agent Mesh Active</span>
+                </div>
+                <div class="user-info">
+                    <span class="user-name">DR. ADMIN</span>
+                    <span class="user-role">INTENSIVIST</span>
+                </div>
+            </div>
+        </header>
+
+        <main class="main-grid">
+            <aside class="left-panel">
+                <div class="panel-header">
+                    <span class="panel-title">PATIENT ROSTER</span>
+                    <div class="panel-controls">
+                        <select id="unitFilter" class="filter-select">
+                            <option value="">All Units</option>
+                            <option value="ICU">ICU</option>
+                            <option value="ER">ER</option>
+                            <option value="TELEMETRY">Telemetry</option>
+                            <option value="MED_SURG">Med-Surg</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="search-box">
+                    <input type="text" id="patientSearch" placeholder="Search MRN or name...">
+                </div>
+                <div class="patient-list" id="patientList">
+                    <div class="loading-indicator">Loading patients...</div>
+                </div>
+                <div class="panel-footer">
+                    <span class="patient-count" id="patientCount">0 patients</span>
+                </div>
+            </aside>
+
+            <section class="center-panel">
+                <div class="monitoring-header">
+                    <div class="patient-info-display" id="patientInfoDisplay">
+                        <span class="no-selection">SELECT PATIENT FOR MONITORING</span>
+                    </div>
+                </div>
+
+                <div class="vitals-grid">
+                    <div class="vital-card heart-rate" id="cardHR">
+                        <div class="vital-label">HEART RATE</div>
+                        <div class="vital-value" id="hrValue">--</div>
+                        <div class="vital-unit">bpm</div>
+                        <div class="vital-trend" id="hrTrend">-</div>
+                    </div>
+                    <div class="vital-card blood-pressure" id="cardBP">
+                        <div class="vital-label">BLOOD PRESSURE</div>
+                        <div class="vital-value" id="bpValue">--/--</div>
+                        <div class="vital-unit">mmHg</div>
+                        <div class="vital-trend" id="bpTrend">-</div>
+                    </div>
+                    <div class="vital-card spo2" id="cardSpO2">
+                        <div class="vital-label">SpO2</div>
+                        <div class="vital-value" id="spo2Value">--</div>
+                        <div class="vital-unit">%</div>
+                        <div class="vital-trend" id="spo2Trend">-</div>
+                    </div>
+                    <div class="vital-card respiratory" id="cardRR">
+                        <div class="vital-label">RESP RATE</div>
+                        <div class="vital-value" id="rrValue">--</div>
+                        <div class="vital-unit">/min</div>
+                        <div class="vital-trend" id="rrTrend">-</div>
+                    </div>
+                    <div class="vital-card temperature" id="cardTemp">
+                        <div class="vital-label">TEMPERATURE</div>
+                        <div class="vital-value" id="tempValue">--</div>
+                        <div class="vital-unit">C</div>
+                        <div class="vital-trend" id="tempTrend">-</div>
+                    </div>
+                    <div class="vital-card map" id="cardMAP">
+                        <div class="vital-label">MAP</div>
+                        <div class="vital-value" id="mapValue">--</div>
+                        <div class="vital-unit">mmHg</div>
+                        <div class="vital-trend" id="mapTrend">-</div>
+                    </div>
+                    <div class="vital-card lactate" id="cardLactate">
+                        <div class="vital-label">LACTATE</div>
+                        <div class="vital-value" id="lactateValue">--</div>
+                        <div class="vital-unit">mmol/L</div>
+                        <div class="vital-trend" id="lactateTrend">-</div>
+                    </div>
+                    <div class="vital-card gcs" id="cardGCS">
+                        <div class="vital-label">GCS</div>
+                        <div class="vital-value" id="gcsValue">--</div>
+                        <div class="vital-unit">/15</div>
+                        <div class="vital-trend">-</div>
+                    </div>
+                </div>
+
+                <div class="waveform-section">
+                    <div class="waveform-container">
+                        <div class="waveform-label">ECG</div>
+                        <canvas id="ecgWaveform" class="waveform-canvas"></canvas>
+                    </div>
+                    <div class="waveform-container">
+                        <div class="waveform-label">SpO2</div>
+                        <canvas id="spo2Waveform" class="waveform-canvas"></canvas>
+                    </div>
+                </div>
+
+                <div class="scores-section">
+                    <div class="score-card" id="news2Card">
+                        <div class="score-label">NEWS2</div>
+                        <div class="score-value" id="news2Value">--</div>
+                        <div class="score-interpretation" id="news2Interp">--</div>
+                    </div>
+                    <div class="score-card" id="sofaCard">
+                        <div class="score-label">SOFA</div>
+                        <div class="score-value" id="sofaValue">--</div>
+                        <div class="score-interpretation" id="sofaInterp">--</div>
+                    </div>
+                    <div class="score-card" id="qsofaCard">
+                        <div class="score-label">qSOFA</div>
+                        <div class="score-value" id="qsofaValue">--</div>
+                        <div class="score-interpretation" id="qsofaInterp">--</div>
+                    </div>
+                    <div class="score-card sepsis-risk" id="sepsisCard">
+                        <div class="score-label">SEPSIS RISK</div>
+                        <div class="score-value" id="sepsisValue">--</div>
+                        <div class="score-interpretation" id="sepsisInterp">--</div>
+                    </div>
+                </div>
+
+                <div class="explainability-panel" id="explainabilityPanel">
+                    <div class="panel-header">
+                        <span class="panel-title">AI DECISION EXPLAINABILITY</span>
+                        <button class="btn-icon" id="toggleExplain">?</button>
+                    </div>
+                    <div class="explainability-content" id="explainabilityContent">
+                        <p class="placeholder">Select a patient to view AI reasoning</p>
+                    </div>
+                </div>
+            </section>
+
+            <aside class="right-panel">
+                <div class="panel-header">
+                    <span class="panel-title">AGENT COLLABORATION FEED</span>
+                </div>
+                <div class="agent-feed" id="agentFeed">
+                    <div class="agent-message">
+                        <div class="agent-badge coordinator">SYSTEM</div>
+                        <div class="agent-content">Clinical Command Center initialized. Monitoring active.</div>
+                        <div class="agent-time">Now</div>
+                    </div>
+                </div>
+
+                <div class="panel-header alerts-header">
+                    <span class="panel-title">ACTIVE ALERTS</span>
+                    <span class="alert-badge critical" id="alertCount">0</span>
+                </div>
+                <div class="alerts-list" id="alertsList">
+                    <div class="no-alerts">No active alerts</div>
+                </div>
+
+                <div class="timeline-header">
+                    <span class="panel-title">CLINICAL TIMELINE</span>
+                </div>
+                <div class="timeline" id="timeline">
+                    <div class="timeline-item">
+                        <div class="timeline-dot"></div>
+                        <div class="timeline-content">System initialized</div>
+                        <div class="timeline-time">Now</div>
+                    </div>
+                </div>
+            </aside>
+        </main>
+
+        <footer class="footer">
+            <div class="footer-left">
+                <span class="footer-stat">Patients: <span id="totalPatients">0</span></span>
+                <span class="footer-stat">Critical: <span id="criticalCount" class="critical">0</span></span>
+                <span class="footer-stat">Active Alerts: <span id="activeAlerts">0</span></span>
+            </div>
+            <div class="footer-center">
+                <button class="btn-demo" id="triggerDemo">DEMO SEPTIC SHOCK</button>
+            </div>
+            <div class="footer-right">
+                <span class="version">Code Blue AI v1.0.0</span>
+            </div>
+        </footer>
+    </div>
+
+    <div class="modal-overlay" id="demoModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <span class="modal-title">DEMO MODE: SEPTIC SHOCK SCENARIO</span>
+                <button class="btn-close" id="closeModal">&times;</button>
+            </div>
+            <div class="modal-body" id="demoContent">
+                <div class="demo-step" id="step1">
+                    <div class="demo-phase">PHASE 1: DETECTION</div>
+                    <div class="demo-description">Patient John Doe showing signs of clinical deterioration...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
